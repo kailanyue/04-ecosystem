@@ -1,0 +1,14 @@
+[package]
+name = "ecosystem"
+version = "0.1.0"
+authors = ["kailan yue <yuekailan@gmail.com>"]
+edition = "2021"
+description = ""
+documentation = ""
+keywords = ["", ""]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kailanyue/04-ecosystem"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
