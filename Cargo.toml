@@ -13,6 +13,7 @@ repository = "https://github.com/kailanyue/04-ecosystem"
 
 [dependencies]
 anyhow = "1.0.86"
+chacha20poly1305 = "0.10.1"
 chrono = { version = "0.4.38", features = ["serde"] }
 opentelemetry = "0.22.0"
 opentelemetry-otlp = { version = "0.15.0", features = ["tonic"] }
@@ -20,6 +21,7 @@ opentelemetry-semantic-conventions = "0.15.0"
 opentelemetry_sdk = { version = "0.22.1", features = ["rt-tokio"] }
 serde = { version = "1.0.202", features = ["derive"] }
 serde_json = "1.0.117"
+serde_with = "3.8.1"
 snafu = "0.8.2"
 thiserror = "1.0.61"
 toml = "0.8.13"
@@ -31,8 +33,10 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [dev-dependencies]
 axum = { version = "0.7.5", features = ["http2", "query", "tracing"] }
+base64 = "0.22.1"
 derive_builder = "0.20.0"
 derive_more = "0.99.17"
+http = "1.1.0"
 serde = { version = "1.0.202", features = ["derive"] }
 serde_json = "1.0.117"
 strum = { version = "0.26.2", features = ["derive"] }
