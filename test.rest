@@ -8,3 +8,11 @@ Content-Type: application/json
 {
     "skills": ["Rust", "Go", "TypeScript"]
 }
+
+### use minginx
+PATCH http://localhost:3010/
+Content-Type: application/json
+
+{
+    "skills": ["Rust", "Go", "C++"]
+}
