@@ -15,6 +15,7 @@ repository = "https://github.com/kailanyue/04-ecosystem"
 anyhow = "1.0.86"
 chacha20poly1305 = "0.10.1"
 chrono = { version = "0.4.38", features = ["serde"] }
+nanoid = "0.4.0"
 opentelemetry = "0.22.0"
 opentelemetry-otlp = { version = "0.15.0", features = ["tonic"] }
 opentelemetry-semantic-conventions = "0.15.0"
@@ -45,6 +46,7 @@ http = "1.1.0"
 loom = "0.7.2"
 serde = { version = "1.0.202", features = ["derive"] }
 serde_json = "1.0.117"
+sqlx = { version = "0.7", features = [ "postgres", "runtime-tokio", "tls-rustls" ] }
 strum = { version = "0.26.2", features = ["derive"] }
 tokio = { version = "1.37.0", features = ["rt", "rt-multi-thread", "macros", "fs"] }
 tokio-stream = "0.1.15"
