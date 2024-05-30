@@ -3,14 +3,15 @@ use std::fmt;
 use anyhow::Result;
 use axum::{
     extract::{Path, State},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use http::{header::LOCATION, HeaderMap, StatusCode};
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool};
+use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
+use thiserror::Error;
 use tokio::net::TcpListener;
 use tracing::{info, level_filters::LevelFilter, warn};
 use tracing_subscriber::{fmt::Layer, layer::SubscriberExt, util::SubscriberInitExt, Layer as _};
@@ -42,6 +43,38 @@ struct UrlRecord {
 
 const LISTEN_ADDR: &str = "0.0.0.0:9876";
 
+#[derive(Error, Debug)]
+pub enum ShortenerError {
+    #[error("database error")]
+    DatabaseError(#[from] sqlx::Error),
+    #[error("URL not found")]
+    NotFound,
+    #[error("Invalid URL")]
+    InvalidUrl,
+}
+
+// Implement `IntoResponse` for `ShortenerError`.
+impl IntoResponse for ShortenerError {
+    fn into_response(self) -> Response {
+        let (status, error_message) = match &self {
+            ShortenerError::DatabaseError(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database error occurred.",
+            ),
+            ShortenerError::NotFound => (StatusCode::NOT_FOUND, "URL parsing error occurred."),
+            ShortenerError::InvalidUrl => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "Failed to shorten URL.")
+            } // Handle more error variants as needed.
+        };
+        let body = Json({
+            let mut map = std::collections::HashMap::new();
+            map.insert("error", error_message);
+            map
+        });
+        (status, body).into_response()
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let layer = Layer::new().with_filter(LevelFilter::INFO);
@@ -67,10 +100,10 @@ async fn main() -> Result<()> {
 async fn shorten(
     State(state): State<AppState>,
     Json(data): Json<ShortenReq>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, ShortenerError> {
     let id = state.shorten(&data.url).await.map_err(|e| {
         warn!("Failed to shorten URL: {e}");
-        StatusCode::UNPROCESSABLE_ENTITY
+        ShortenerError::InvalidUrl
     })?;
     let body = Json(ShortenRes {
         short_url: format!("http://{}/{}", LISTEN_ADDR, id.short_url),
@@ -81,11 +114,11 @@ async fn shorten(
 async fn redirect(
     Path(id): Path<String>,
     State(state): State<AppState>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let url = state
-        .get_url(&id)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+) -> Result<impl IntoResponse, ShortenerError> {
+    let url = state.get_url(&id).await.map_err(|e| {
+        warn!("Failed to get URL: {e}");
+        ShortenerError::NotFound
+    })?;
     let mut headers = HeaderMap::new();
     headers.insert(LOCATION, url.url.parse().unwrap());
     Ok((StatusCode::PERMANENT_REDIRECT, headers))
@@ -93,7 +126,8 @@ async fn redirect(
 
 impl AppState {
     async fn try_new(url: &str) -> Result<Self> {
-        let db = PgPool::connect(url).await?;
+        let db = PgPoolOptions::new().max_connections(5).connect(url).await?;
+        info!("Successfully connected to the database!");
 
         sqlx::query(
             r#"
@@ -110,7 +144,22 @@ impl AppState {
     }
 
     async fn shorten(&self, url: &str) -> Result<ShortenRes> {
-        let id = nanoid!(6);
+        validate_url(url)?;
+        let mut id = nanoid!(6);
+        loop {
+            let ret: Option<UrlRecord> = sqlx::query_as("SELECT id FROM urls WHERE id = $1")
+                .bind(&id)
+                .fetch_optional(&self.db)
+                .await?;
+            match ret {
+                Some(_) => {
+                    warn!("Collision on ID: {id}");
+                    id = nanoid!(6);
+                }
+                None => break,
+            }
+        }
+
         let ret:UrlRecord = sqlx::query_as(
                     "INSERT INTO urls (id, url) VALUES ($1, $2) ON CONFLICT(url) DO UPDATE SET url=EXCLUDED.url RETURNING id",
                 )
@@ -126,10 +175,19 @@ impl AppState {
         let ret: UrlRecord = sqlx::query_as("SELECT url FROM urls WHERE id = $1")
             .bind(id)
             .fetch_one(&self.db)
-            .await?;
+            .await
+            .map_err(ShortenerError::DatabaseError)?;
 
         Ok(ShortenReq { url: ret.url })
     }
+}
+
+fn validate_url(url: &str) -> Result<(), ShortenerError> {
+    url::Url::parse(url).map_err(|_| {
+        warn!("Failed to parse URL: {url}");
+        ShortenerError::InvalidUrl
+    })?;
+    Ok(())
 }
 
 impl fmt::Display for ShortenRes {
