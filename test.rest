@@ -38,4 +38,4 @@ Content-Type: application/json
 
 ### url redirect
 
-GET http://localhost:9876/vizpE-
+GET http://localhost:9876/QTAsHE

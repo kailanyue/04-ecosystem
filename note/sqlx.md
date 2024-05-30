@@ -24,6 +24,9 @@ psql -U postgres
 ```bash
 docker exec -it postgres bash
 psql -U postgres
+
+CREATE DATABASE shortener;
+
 ```
 
 在这里：

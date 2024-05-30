@@ -37,6 +37,7 @@ axum = { version = "0.7.5", features = ["http2", "query", "tracing"] }
 base64 = "0.22.1"
 blake3 = "1.5.1"
 bytes = "1.6.0"
+clap = { version = "4.5.4", features = ["derive"] }
 console-subscriber = "0.2.0"
 dashmap = "5.5.3"
 derive_builder = "0.20.0"

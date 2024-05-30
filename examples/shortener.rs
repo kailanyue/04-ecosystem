@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use clap::Parser;
 use http::{header::LOCATION, HeaderMap, StatusCode};
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
@@ -41,38 +42,30 @@ struct UrlRecord {
     url: String,
 }
 
-const LISTEN_ADDR: &str = "0.0.0.0:9876";
-
 #[derive(Error, Debug)]
 pub enum ShortenerError {
     #[error("database error")]
     DatabaseError(#[from] sqlx::Error),
     #[error("URL not found")]
     NotFound,
-    #[error("Invalid URL")]
-    InvalidUrl,
+    #[error("Invalid URL: {0}")]
+    InvalidUrl(String),
 }
 
-// Implement `IntoResponse` for `ShortenerError`.
-impl IntoResponse for ShortenerError {
-    fn into_response(self) -> Response {
-        let (status, error_message) = match &self {
-            ShortenerError::DatabaseError(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Database error occurred.",
-            ),
-            ShortenerError::NotFound => (StatusCode::NOT_FOUND, "URL parsing error occurred."),
-            ShortenerError::InvalidUrl => {
-                (StatusCode::UNPROCESSABLE_ENTITY, "Failed to shorten URL.")
-            } // Handle more error variants as needed.
-        };
-        let body = Json({
-            let mut map = std::collections::HashMap::new();
-            map.insert("error", error_message);
-            map
-        });
-        (status, body).into_response()
-    }
+#[derive(Clone, Debug, Parser)]
+#[command(name="url", version, author, about, long_about = None)]
+struct Config {
+    /// 数据库连接字符串
+    #[arg(
+        long,
+        default_value = "postgres://postgres:postgres@192.168.1.9:5432/shortener",
+        help = "database url"
+    )]
+    database_url: String,
+
+    /// 监听地址
+    #[arg(long, default_value = "0.0.0.0:9876", help = "listen address")]
+    listen_addr: String,
 }
 
 #[tokio::main]
@@ -80,53 +73,56 @@ async fn main() -> Result<()> {
     let layer = Layer::new().with_filter(LevelFilter::INFO);
     tracing_subscriber::registry().with(layer).init();
 
-    let url = "postgres://postgres:postgres@192.168.56.101:5432/shortener";
+    let config = Config::parse();
 
-    let state = AppState::try_new(url).await?;
-    info!("Connected to database: {url}");
+    let database_url = config.database_url;
+    let state = AppState::try_new(&database_url).await?;
+    info!("Connected to database: {database_url}");
 
-    let listener = TcpListener::bind(LISTEN_ADDR).await?;
-    info!("Listening on: {LISTEN_ADDR}");
+    let listen_addr = config.listen_addr;
+    let listener = TcpListener::bind(&listen_addr).await?;
+    info!("Listening on: {}", listen_addr);
 
     let app = Router::new()
         .route("/", post(shorten))
         .route("/:id", get(redirect))
-        .with_state(state);
+        .with_state((state, listen_addr)); // 将配置传递给应用状态
+
     axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
 }
 
 async fn shorten(
-    State(state): State<AppState>,
+    State((state, listen_addr)): State<(AppState, String)>,
     Json(data): Json<ShortenReq>,
 ) -> Result<impl IntoResponse, ShortenerError> {
     let id = state.shorten(&data.url).await.map_err(|e| {
         warn!("Failed to shorten URL: {e}");
-        ShortenerError::InvalidUrl
+        ShortenerError::InvalidUrl(data.url)
     })?;
     let body = Json(ShortenRes {
-        short_url: format!("http://{}/{}", LISTEN_ADDR, id.short_url),
+        short_url: format!("http://{}/{}", listen_addr, id.short_url),
     });
     Ok((StatusCode::CREATED, body))
 }
 
 async fn redirect(
     Path(id): Path<String>,
-    State(state): State<AppState>,
+    State((state, _)): State<(AppState, String)>,
 ) -> Result<impl IntoResponse, ShortenerError> {
-    let url = state.get_url(&id).await.map_err(|e| {
-        warn!("Failed to get URL: {e}");
-        ShortenerError::NotFound
-    })?;
+    let url = state.get_url(&id).await?;
     let mut headers = HeaderMap::new();
     headers.insert(LOCATION, url.url.parse().unwrap());
     Ok((StatusCode::PERMANENT_REDIRECT, headers))
 }
 
 impl AppState {
-    async fn try_new(url: &str) -> Result<Self> {
-        let db = PgPoolOptions::new().max_connections(5).connect(url).await?;
+    async fn try_new(database_url: &str) -> Result<Self> {
+        let db = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(database_url)
+            .await?;
         info!("Successfully connected to the database!");
 
         sqlx::query(
@@ -143,7 +139,7 @@ impl AppState {
         Ok(Self { db })
     }
 
-    async fn shorten(&self, url: &str) -> Result<ShortenRes> {
+    async fn shorten(&self, url: &str) -> Result<ShortenRes, ShortenerError> {
         validate_url(url)?;
         let mut id = nanoid!(6);
         loop {
@@ -171,23 +167,48 @@ impl AppState {
         Ok(ShortenRes { short_url: ret.id })
     }
 
-    async fn get_url(&self, id: &str) -> Result<ShortenReq> {
-        let ret: UrlRecord = sqlx::query_as("SELECT url FROM urls WHERE id = $1")
+    async fn get_url(&self, id: &str) -> Result<UrlRecord, ShortenerError> {
+        let ret = sqlx::query_as::<_, UrlRecord>("SELECT url FROM urls WHERE id = $1")
             .bind(id)
-            .fetch_one(&self.db)
-            .await
-            .map_err(ShortenerError::DatabaseError)?;
+            .fetch_optional(&self.db)
+            .await?;
 
-        Ok(ShortenReq { url: ret.url })
+        match ret {
+            Some(url_record) => Ok(url_record),
+            None => Err(ShortenerError::NotFound),
+        }
     }
 }
 
 fn validate_url(url: &str) -> Result<(), ShortenerError> {
-    url::Url::parse(url).map_err(|_| {
-        warn!("Failed to parse URL: {url}");
-        ShortenerError::InvalidUrl
-    })?;
+    let parsed_url =
+        url::Url::parse(url).map_err(|_| ShortenerError::InvalidUrl(url.to_string()))?;
+    if !["http", "https"].contains(&parsed_url.scheme()) {
+        return Err(ShortenerError::InvalidUrl(url.to_string()));
+    }
     Ok(())
+}
+
+// Implement `IntoResponse` for `ShortenerError`.
+impl IntoResponse for ShortenerError {
+    fn into_response(self) -> Response {
+        let (status, error_message) = match &self {
+            ShortenerError::DatabaseError(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database error occurred.",
+            ),
+            ShortenerError::NotFound => (StatusCode::NOT_FOUND, "URL parsing error occurred."),
+            ShortenerError::InvalidUrl(_) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "Failed to shorten URL.")
+            }
+        };
+        let body = Json({
+            let mut map = std::collections::HashMap::new();
+            map.insert("error", error_message);
+            map
+        });
+        (status, body).into_response()
+    }
 }
 
 impl fmt::Display for ShortenRes {
