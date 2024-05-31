@@ -55,7 +55,7 @@ pub enum ShortenerError {
 #[derive(Clone, Debug, Parser)]
 #[command(name="url", version, author, about, long_about = None)]
 struct Config {
-    /// 数据库连接字符串
+    // 数据库连接
     #[arg(
         long,
         default_value = "postgres://postgres:postgres@192.168.1.9:5432/shortener",
@@ -63,7 +63,7 @@ struct Config {
     )]
     database_url: String,
 
-    /// 监听地址
+    // 监听地址
     #[arg(long, default_value = "0.0.0.0:9876", help = "listen address")]
     listen_addr: String,
 }

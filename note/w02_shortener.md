@@ -22,7 +22,7 @@ impl IntoResponse for ShortenerError {
 
 // 修改错误返回类型
 async fn shorten(
-    State(state): State<AppState>,
+    State((state, listen_addr)): State<(AppState, String)>,
     Json(data): Json<ShortenReq>,
 ) -> Result<impl IntoResponse, ShortenerError>;
 
@@ -30,8 +30,8 @@ async fn shorten(
 // 修改错误返回类型
 async fn redirect(
     Path(id): Path<String>,
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ShortenerError>;
+    State((state, _)): State<(AppState, String)>,
+) -> Result<impl IntoResponse, ShortenerError> ;
 ```
 
 ### 02 url 验证
@@ -39,15 +39,16 @@ async fn redirect(
 实现过程：
 ```rust
 fn validate_url(url: &str) -> Result<(), ShortenerError> {
-    url::Url::parse(url).map_err(|_| {
-        warn!("Failed to parse URL: {url}");
-        ShortenerError::InvalidUrl
-    })?;
+    let parsed_url =
+        url::Url::parse(url).map_err(|_| ShortenerError::InvalidUrl(url.to_string()))?;
+    if !["http", "https"].contains(&parsed_url.scheme()) {
+        return Err(ShortenerError::InvalidUrl(url.to_string()));
+    }
     Ok(())
 }
 
 
-async fn shorten(&self, url: &str) -> Result<ShortenRes> {
+async fn shorten(&self, url: &str) -> Result<ShortenRes, ShortenerError> {
     // 验证 url 是否合法
     validate_url(url)?;
     ... ...
@@ -74,7 +75,28 @@ impl AppState {
     }
 }
 ```
+### 04 命令行参数
+使用 clap 接收命令行输入的 database_url 和 listen_addr
+```rust
+#[derive(Clone, Debug, Parser)]
+#[command(name="url", version, author, about, long_about = None)]
+struct Config {
+    // 数据库连接
+    #[arg(
+        long,
+        default_value = "postgres://postgres:postgres@192.168.1.9:5432/shortener",
+        help = "database url"
+    )]
+    database_url: String,
 
-### 04 增加单元测试和集成测试
+    // 监听地址
+    #[arg(long, default_value = "0.0.0.0:9876", help = "listen address")]
+    listen_addr: String,
+}
 
-### 05 命令行参数
+async fn main() -> Result<()> {
+    ... ...
+    let config = Config::parse();
+    ... ...
+}
+```
